@@ -10,26 +10,8 @@ import json
 import os
 import subprocess
 import threading
-import urllib.request
 import ipaddress
-import socket
 from pathlib import Path
-
-# 尝试导入代理相关库（用于 SOCKS5 代理）
-HAS_SOCKS = False
-HAS_REQUESTS = False
-
-try:
-    import socks
-    HAS_SOCKS = True
-except ImportError:
-    pass
-
-try:
-    import requests
-    HAS_REQUESTS = True
-except ImportError:
-    pass
 
 # Windows 特殊处理
 if sys.platform == 'win32':
@@ -82,11 +64,11 @@ except ImportError:
     print("安装命令: pip3 install PyQt5")
     sys.exit(1)
 
-APP_VERSION = "1.4"
+APP_VERSION = "1.3"
 APP_TITLE = f"ECH Workers 客户端 v{APP_VERSION}"
 
-# 中国IP列表URL
-CHINA_IP_LIST_URL = "https://raw.githubusercontent.com/mayaxcn/china-ip-list/master/chn_ip.txt"
+# 中国IP列表文件名（离线版本，放在程序目录）
+CHINA_IP_LIST_FILE = "chn_ip.txt"
 
 def get_app_dir():
     """获取程序所在目录（支持打包后的可执行文件）"""
@@ -560,29 +542,21 @@ class MainWindow(QMainWindow):
         
         QApplication.quit()
     
-    def load_china_ip_list_async(self, silent=False, use_proxy=False, proxy_addr=None):
-        """异步加载中国IP列表（静默模式：失败时不显示错误）
+    def load_china_ip_list_async(self, silent=False):
+        """异步加载中国IP列表（从离线文件读取）
         
         Args:
             silent: 是否静默模式（失败时不显示错误）
-            use_proxy: 是否使用代理下载
-            proxy_addr: 代理地址，格式为 "127.0.0.1:1080"
         """
         def load_in_thread():
             try:
                 if not silent:
-                    if use_proxy:
-                        self.append_log(f"[系统] 正在通过代理 {proxy_addr} 下载中国IP列表...\n")
-                    else:
-                        self.append_log("[系统] 正在加载中国IP列表...\n")
-                ranges = self._load_china_ip_list(use_proxy=use_proxy, proxy_addr=proxy_addr)
+                    self.append_log("[系统] 正在加载中国IP列表（离线版本）...\n")
+                ranges = self._load_china_ip_list()
                 if ranges:
                     self.china_ip_ranges = ranges
                     if not silent:
-                        if use_proxy:
-                            self.append_log(f"[系统] 已通过代理下载中国IP列表，共 {len(ranges)} 个IP段\n")
-                        else:
-                            self.append_log(f"[系统] 已加载中国IP列表，共 {len(ranges)} 个IP段\n")
+                        self.append_log(f"[系统] 已加载中国IP列表，共 {len(ranges)} 个IP段\n")
                 # 失败时不显示错误（静默模式）
             except Exception as e:
                 # 静默模式：不显示错误
@@ -592,13 +566,8 @@ class MainWindow(QMainWindow):
         thread = threading.Thread(target=load_in_thread, daemon=True)
         thread.start()
     
-    def _load_china_ip_list(self, use_proxy=False, proxy_addr=None):
-        """下载并解析中国IP列表（缓存永久有效）
-        
-        Args:
-            use_proxy: 是否使用代理下载
-            proxy_addr: 代理地址，格式为 "127.0.0.1:1080" 或 "host:port"
-        """
+    def _load_china_ip_list(self):
+        """从程序目录读取并解析中国IP列表（离线版本）"""
         try:
             # 尝试从缓存读取（永久有效，不检查过期时间）
             cache_file = self.config_manager.config_dir / "china_ip_list.json"
@@ -612,57 +581,17 @@ class MainWindow(QMainWindow):
                 except:
                     pass
             
-            # 下载IP列表
-            if use_proxy and proxy_addr:
-                # 解析代理地址
-                if ':' in proxy_addr:
-                    proxy_host, proxy_port = proxy_addr.rsplit(':', 1)
-                    proxy_port = int(proxy_port)
-                else:
-                    proxy_host = proxy_addr
-                    proxy_port = 1080
-                
-                # 尝试使用代理下载
-                if HAS_REQUESTS:
-                    # 使用 requests 库（支持 SOCKS5）
-                    try:
-                        proxies = {
-                            'http': f'socks5://{proxy_host}:{proxy_port}',
-                            'https': f'socks5://{proxy_host}:{proxy_port}'
-                        }
-                        response = requests.get(CHINA_IP_LIST_URL, proxies=proxies, timeout=30)
-                        response.raise_for_status()
-                        content = response.text
-                    except Exception:
-                        # 代理下载失败，尝试直接下载
-                        with urllib.request.urlopen(CHINA_IP_LIST_URL, timeout=10) as response:
-                            content = response.read().decode('utf-8')
-                elif HAS_SOCKS:
-                    # 使用 socks 库
-                    try:
-                        # 创建 SOCKS5 代理 socket
-                        socks.set_default_proxy(socks.SOCKS5, proxy_host, proxy_port)
-                        socket.socket = socks.socksocket
-                        
-                        # 下载
-                        with urllib.request.urlopen(CHINA_IP_LIST_URL, timeout=30) as response:
-                            content = response.read().decode('utf-8')
-                        
-                        # 恢复原始 socket
-                        socket.socket = socket._socket
-                    except Exception:
-                        # 代理下载失败，尝试直接下载
-                        socket.socket = socket._socket  # 确保恢复
-                        with urllib.request.urlopen(CHINA_IP_LIST_URL, timeout=10) as response:
-                            content = response.read().decode('utf-8')
-                else:
-                    # 没有代理库，直接下载
-                    with urllib.request.urlopen(CHINA_IP_LIST_URL, timeout=10) as response:
-                        content = response.read().decode('utf-8')
-            else:
-                # 直接下载（不使用代理）
-                with urllib.request.urlopen(CHINA_IP_LIST_URL, timeout=10) as response:
-                    content = response.read().decode('utf-8')
+            # 从程序目录读取IP列表文件（离线版本）
+            app_dir = get_app_dir()
+            ip_list_file = app_dir / CHINA_IP_LIST_FILE
+            
+            if not ip_list_file.exists():
+                # 如果文件不存在，返回 None（静默失败）
+                return None
+            
+            # 读取文件内容
+            with open(ip_list_file, 'r', encoding='utf-8') as f:
+                content = f.read()
             
             # 解析IP范围
             ranges = []
@@ -1046,33 +975,9 @@ class MainWindow(QMainWindow):
         self.server_combo.setEnabled(False)
         self.append_log(f"[系统] 已启动服务器: {server['name']}\n")
         
-        # 代理启动后，通过代理下载中国IP列表
-        def download_ip_list_after_proxy_start():
-            import time
-            # 等待代理启动（最多等待5秒）
-            for _ in range(10):
-                if self.process_thread and self.process_thread.is_running:
-                    time.sleep(0.5)  # 再等待0.5秒确保代理已就绪
-                    break
-                time.sleep(0.5)
-            
-            # 如果代理已启动，通过代理下载
-            if self.process_thread and self.process_thread.is_running:
-                listen_addr = server.get('listen', '127.0.0.1:1080')
-                if self.china_ip_ranges is None:
-                    self.append_log(f"[系统] 代理已启动，正在通过代理 {listen_addr} 下载中国IP列表...\n")
-                    self.load_china_ip_list_async(silent=False, use_proxy=True, proxy_addr=listen_addr)
-                else:
-                    # 如果已有缓存，尝试更新（通过代理）
-                    self.append_log(f"[系统] 正在通过代理 {listen_addr} 更新中国IP列表...\n")
-                    self.load_china_ip_list_async(silent=True, use_proxy=True, proxy_addr=listen_addr)
-            else:
-                # 代理未启动，直接下载
-                if self.china_ip_ranges is None:
-                    self.append_log("[系统] 正在下载中国IP列表...\n")
-                    self.load_china_ip_list_async(silent=False, use_proxy=False)
-        
-        threading.Thread(target=download_ip_list_after_proxy_start, daemon=True).start()
+        # 如果中国IP列表未加载，尝试加载（从离线文件）
+        if self.china_ip_ranges is None:
+            self.load_china_ip_list_async(silent=True)
     
     def stop_process(self):
         """停止进程"""
